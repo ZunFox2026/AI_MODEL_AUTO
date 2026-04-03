@@ -1,0 +1,86 @@
+name: Auto Deploy AI Model with Cloudflare Tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: 'Model AI (huggingface id)'
+        required: true
+        default: 'gpt2'
+        type: string
+      telegram_bot_token:
+        description: 'Telegram Bot Token (optional)'
+        required: false
+        type: string
+      telegram_chat_id:
+        description: 'Telegram Chat ID (optional)'
+        required: false
+        type: string
+      use_gpu:
+        description: 'Use GPU if available?'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run setup script
+        env:
+          MODEL_NAME: ${{ github.event.inputs.model_name }}
+          TELEGRAM_BOT_TOKEN: ${{ github.event.inputs.telegram_bot_token }}
+          TELEGRAM_CHAT_ID: ${{ github.event.inputs.telegram_chat_id }}
+          USE_GPU: ${{ github.event.inputs.use_gpu }}
+        run: python scripts/setup_env.py
+
+      - name: Keep server alive (background)
+        run: |
+          python scripts/start_server.py &
+          sleep 10
+          echo "Server started"
+
+      - name: Install cloudflared
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+
+      - name: Create Cloudflare Tunnel
+        run: |
+          nohup cloudflared tunnel --url http://localhost:8000 --logfile cloudflared.log &
+          sleep 15
+          # Lấy URL từ log
+          PUBLIC_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare.com' cloudflared.log | head -1)
+          echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
+          echo $PUBLIC_URL > API.txt
+
+      - name: Notify Telegram
+        if: ${{ github.event.inputs.telegram_bot_token != '' && github.event.inputs.telegram_chat_id != '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ github.event.inputs.telegram_bot_token }}
+          TELEGRAM_CHAT_ID: ${{ github.event.inputs.telegram_chat_id }}
+          PUBLIC_URL: ${{ env.PUBLIC_URL }}
+        run: python scripts/telegram_notify.py
+
+      - name: Upload API.txt as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-url
+          path: API.txt
+
+      - name: Keep workflow alive (optional)
+        run: sleep 1h   # Giữ action chạy để tunnel hoạt động (có thể điều chỉnh)
