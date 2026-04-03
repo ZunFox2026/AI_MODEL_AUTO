@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+*.log
+model_config.txt
+API.txt
+cloudflared*
